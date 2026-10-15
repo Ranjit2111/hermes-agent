@@ -224,9 +224,9 @@ export class CanonicalDesktopProtocol {
     if (typeof reason === 'string') { this.settleModelConfirmation(params) }
 
     // A typed busy refusal of a rewind or a move wrote nothing either; the retry is a new request at the new revision.
-    if (reason !== 'revision_conflict' && !(reason === 'session_busy' && ['rewind', 'workspace'].includes(params.operation as string))) { return }
+    if (reason !== 'revision_conflict' && reason !== 'stale_generation' && !(reason === 'session_busy' && ['rewind', 'workspace'].includes(params.operation as string))) { return }
 
-    // A confirmed CAS refusal did not mutate. Ambiguous transport failures keep
+    // A confirmed fence refusal did not mutate. Ambiguous transport failures keep
     // the original revision/id so a retry cannot overwrite another user's edit.
     for (const [key, mutation] of this.mutations) { if (mutation.request_id === params.request_id) { this.mutations.delete(key) } }
   }
