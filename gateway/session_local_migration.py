@@ -63,21 +63,42 @@ def resolve_local_target(authority, actor, sid):
 
 
 def legacy_launch_params(row):
-    """``(create params, api_mode)`` a legacy row resumes on: its cwd and model and, for main's
-    in-process ACP server, the route it saved in ``model_config`` and rebuilt the agent from
-    (``SessionManager._persist`` / ``_restore``, billing columns as its fallback). Older ACP rows
-    hold the workspace only there. ``api_mode`` is no create field, so it is returned apart."""
+    """``(create params, api_mode)`` a legacy row resumes on.
+
+    The old local surfaces persisted their effective route and runtime choices in
+    ``model_config``. Preserve those choices while adopting them, rather than
+    combining their model with a later profile default. Older ACP rows also hold
+    their workspace only there. ``api_mode`` is no create field, so it is
+    returned apart.
+    """
     params = {key: row[key] for key in ('cwd', 'model') if row.get(key)}
-    if row['source'] != 'acp':
-        return params, None
     from hermes_state_sessions import _parse_model_config
     saved = _parse_model_config(row.get('model_config'))
-    route = {'cwd': saved.get('cwd'), 'provider': saved.get('provider') or row.get('billing_provider'),
-             'base_url': saved.get('base_url') or row.get('billing_base_url'), 'api_mode': saved.get('api_mode')}
+    from hermes_state_gateway import SessionGatewayMixin
+    route = SessionGatewayMixin.session_gateway_runtime(row)
     route = {key: value.strip() for key, value in route.items() if isinstance(value, str) and value.strip()}
-    if 'cwd' not in params and Path(route.get('cwd', '')).is_absolute():
-        params['cwd'] = route['cwd']
+    billing_base_url = row.get('billing_base_url')
+    if 'base_url' not in route and isinstance(billing_base_url, str) and billing_base_url.strip():
+        route['base_url'] = billing_base_url.strip()
+    if row['source'] == 'acp' and 'cwd' not in params and Path(str(saved.get('cwd') or '')).is_absolute():
+        params['cwd'] = saved['cwd']
     params.update({key: route[key] for key in ('provider', 'base_url') if key in route})
+    reasoning = saved.get('reasoning_config')
+    if isinstance(reasoning, dict):
+        reasoning = 'none' if reasoning.get('enabled') is False else reasoning.get('effort')
+    if isinstance(reasoning, str):
+        from hermes_constants import parse_reasoning_effort
+        if parse_reasoning_effort(reasoning) is not None:
+            params['reasoning'] = reasoning
+    tier = saved.get('service_tier')
+    if isinstance(tier, str):
+        from agent.fast_mode import parse_exact_service_tier
+        try:
+            parse_exact_service_tier(tier)
+        except ValueError:
+            pass
+        else:
+            params['service_tier'] = tier
     return params, route.get('api_mode')
 
 
