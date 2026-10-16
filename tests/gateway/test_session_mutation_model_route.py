@@ -213,3 +213,35 @@ async def test_a_route_that_cannot_authenticate_does_not_block_switching_away(ho
     finally:
         await owner.close()
         store.close_all_db_handles()
+
+
+@pytest.mark.asyncio
+async def test_a_following_pick_keeps_the_current_endpoints_key_env(home, endpoints):
+    """The profile names its key by ``key_env`` and moved from A to B before the pick. The pick lands
+    on B, so B's own key keeps authenticating the next turn: the pointer must not be dropped as a
+    route change measured from A, the endpoint the session was created on."""
+    (a, url_a), (b, url_b) = endpoints
+    (home / '.env').write_text('KEY_A=key-a\nKEY_B=key-b\n', encoding='utf-8')
+
+    def profile(url, var):
+        (home / 'config.yaml').write_text(json.dumps({'model': {
+            'provider': 'custom', 'default': 'original', 'base_url': url, 'key_env': var}}), encoding='utf-8')
+    profile(url_a, 'KEY_A')
+    store, runner, authority, owner = _owner(home)
+    _bind_resolver(runner)
+    try:
+        live = await _create(owner, authority, home, 'follow-key-env')
+        sid = next(sid for sid, value in authority.sessions.items() if value is live)
+        profile(url_b, 'KEY_B')
+        assert _route(runner, live) == ('original', url_b, 'key-b')
+        a.received.clear()
+        b.received.clear()
+
+        response = await _pick(owner, authority, sid, {'model': 'picked', 'provider': 'custom'})
+
+        assert 'result' in response, response
+        assert a.received == [] and set(b.received) == {'Bearer key-b'}
+        assert _route(runner, live) == ('picked', url_b, 'key-b')
+    finally:
+        await owner.close()
+        store.close_all_db_handles()

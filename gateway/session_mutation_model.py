@@ -7,6 +7,9 @@ from typing import NamedTuple
 from hermes_state_runtime import RuntimeStoreError
 
 
+_ROUTE_FIELDS = ('provider', 'base_url', 'key_env', 'api_key_env')
+
+
 class _Route(NamedTuple):
     provider: str
     model: str
@@ -63,6 +66,12 @@ async def prepare_model(authority, live, payload, prepared):
     if refusal is not None:
         return refusal
     frozen = old.config()
+    if old.follows_profile:
+        # A following session switches FROM the profile's current route: measured from its creation
+        # endpoint, a pick on the current one read as a route change and dropped its key_env pointer.
+        followed = config.get('model') or {}
+        frozen['model'] = {k: v for k, v in (frozen.get('model') or {}).items() if k not in _ROUTE_FIELDS}
+        frozen['model'].update({k: followed[k] for k in _ROUTE_FIELDS if k in followed})
     # The one selection shape config.yaml gets (#25106): api_mode follows the target, a context pin
     # and the endpoint-bound credential fields (inline key, key_env/api_key_env) drop on a route change.
     # Off-loop: the context-pin check can do cold-start disk I/O.
