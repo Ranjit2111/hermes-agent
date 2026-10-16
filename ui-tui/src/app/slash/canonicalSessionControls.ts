@@ -39,40 +39,18 @@ function modelPayload(arg: string) {
       continue
     }
 
-    throw new Error(t('canonical.controls.unsupportedModelOption', flag))
-  }
-
-  return payload
-}
-
-/** Split a picker-issued `--reasoning <level>` off a `/model` argument (#138856): the canonical
- * model mutation has no effort field, so the level rides as the follow-up `reasoning` mutation the
- * same value's `/reasoning` command issues. An unknown level is refused like any other flag the
- * model mutation does not take (the backend writes the level into policy unvalidated). */
-function splitModelEffort(arg: string) {
-  const parts = arg.trim().split(/\s+/)
-  const rest: string[] = []
-  let effort = ''
-
-  while (parts.length) {
-    const part = parts.shift()!
-
-    if (part !== '--reasoning') {
-      rest.push(part)
+    // A picker-issued level (#138856) rides in the same selection: a busy session defers the pick
+    // and commits model and level together. An unknown level is refused like any other flag.
+    if (flag === '--reasoning' && CANONICAL_REASONING_EFFORTS.has(parts[0]?.toLowerCase() ?? '')) {
+      payload.reasoning = parts.shift()!.toLowerCase()
 
       continue
     }
 
-    const level = parts.shift()
-
-    if (!level || !CANONICAL_REASONING_EFFORTS.has(level.toLowerCase())) {
-      throw new Error(t('canonical.controls.unsupportedModelOption', part))
-    }
-
-    effort = level.toLowerCase()
+    throw new Error(t('canonical.controls.unsupportedModelOption', flag))
   }
 
-  return { arg: rest.join(' '), effort }
+  return payload
 }
 
 export type CanonicalOperation = 'model' | 'branch' | 'compress' | 'delete' | 'rename' | 'rewind' | 'reasoning'
@@ -207,13 +185,7 @@ const needsModelConfirmation = (result: CanonicalControlResult): result is Model
  *  nothing. Ask with the same dialog the legacy `config.set` path used; only "switch anyway"
  *  re-sends, once, with the owner's token. A confirmed send refused again (a turn or another
  *  switch landed first) is reported, never re-asked in a loop. */
-function askModelConfirmation(
-  refusal: ModelConfirmation,
-  arg: string,
-  ctx: SlashRunCtx,
-  confirmed: boolean,
-  effort = ''
-) {
+function askModelConfirmation(refusal: ModelConfirmation, arg: string, ctx: SlashRunCtx, confirmed: boolean) {
   if (confirmed) {
     throw new Error(`${refusal.confirm_message ?? ''}\n\n${t('slashCmd.session.model.confirmStale')}`.trim())
   }
@@ -224,7 +196,7 @@ function askModelConfirmation(
       confirmLabel: t('slashCmd.session.model.switchAnyway'),
       danger: true,
       detail: refusal.confirm_message || t('slashCmd.session.model.expensiveDetail'),
-      onConfirm: () => void runCanonicalSessionControl('model', arg, ctx, refusal.confirm, effort),
+      onConfirm: () => void runCanonicalSessionControl('model', arg, ctx, refusal.confirm),
       title: t('slashCmd.session.model.confirmTitle', refusal.target_model ?? arg.trim().split(/\s+/)[0] ?? '')
     }
   })
@@ -284,19 +256,10 @@ function applyModelResult(result: CanonicalControlResult, ctx: SlashRunCtx) {
     }
   }))
   ctx.transcript.sys(t('session.main.modelSwitched', result.model))
-}
 
-/** The picker's effort step applies after the pick lands, as the same revision-fenced `reasoning`
- *  mutation `/reasoning <level>` issues; a failed level reports without unwinding the switch. */
-async function applyModelEffort(gw: MutationGateway, ctx: SlashRunCtx, effort: string) {
-  if (!effort) {
-    return
-  }
-
-  const mutation = await mutateCanonical(gw, ctx.sid!, 'reasoning', { effort }, ctx.stale)
-
-  if (mutation?.result && !ctx.stale()) {
-    ctx.transcript.sys(t('slashCmd.session.reasoning.current', effort))
+  if (typeof result.effort === 'string') {
+    // The level committed in the same selection (a deferred result carries none yet).
+    ctx.transcript.sys(t('slashCmd.session.reasoning.current', result.effort))
   }
 }
 
@@ -343,19 +306,13 @@ export async function runCanonicalSessionControl(
   operation: 'model' | 'branch' | 'compress',
   arg: string,
   ctx: SlashRunCtx,
-  confirm?: string,
-  confirmEffort = ''
+  confirm?: string
 ) {
   const gw = ctx.gateway.gw
-  let effort = confirmEffort
 
   try {
     if (!ctx.sid) {
       throw new Error(t('slashCmd.core.status.noActiveSession'))
-    }
-
-    if (operation === 'model' && arg.includes('--reasoning')) {
-      ;({ arg, effort } = splitModelEffort(arg))
     }
 
     const mutation = await mutateCanonicalSession(gw, ctx.sid, operation, arg, ctx.stale, confirm)
@@ -375,12 +332,11 @@ export async function runCanonicalSessionControl(
     }
 
     if (operation === 'model' && needsModelConfirmation(result)) {
-      askModelConfirmation(result, arg, ctx, Boolean(confirm), effort)
+      askModelConfirmation(result, arg, ctx, Boolean(confirm))
     } else if (operation === 'branch') {
       await applyBranchResult(result, arg, ctx)
     } else if (operation === 'model') {
       applyModelResult(result, ctx)
-      await applyModelEffort(gw, ctx, effort)
     } else if (result.status === 'preview') {
       // `--preview` is a read-only report; nothing to re-hydrate.
       ctx.transcript.sys((result.lines as string[]).join('\n'))

@@ -33,6 +33,10 @@ async def prepare_model(authority, live, payload, prepared):
     # and the endpoint-bound credential fields (inline key, key_env/api_key_env) drop on a route change.
     # Off-loop: the context-pin check can do cold-start disk I/O.
     frozen['model'] = await asyncio.to_thread(apply_model_selection, frozen.get('model'), result)
+    if 'reasoning' in payload:
+        # The level picked with the model lands in the same commit (as prepare_reasoning writes it).
+        frozen.setdefault('agent', {})['reasoning_effort'] = payload['reasoning']
+        frozen['agent'].pop('reasoning_overrides', None)
     if old.follows_profile:
         # A committed /model holds while the profile still targets what it targets now (main's
         # composer_override_profile); a later profile edit supersedes it.

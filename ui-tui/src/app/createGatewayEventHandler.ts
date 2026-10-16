@@ -614,8 +614,9 @@ function applyDeferredPickOutcome(
   }
 
   if (update.status === 'confirmation_required' && typeof update.confirm === 'string') {
-    const pick = (update.payload ?? {}) as { model?: string; provider?: string }
-    const arg = `${pick.model ?? ''}${pick.provider ? ` --provider ${pick.provider}` : ''}`
+    const pick = (update.payload ?? {}) as { model?: string; provider?: string; reasoning?: string }
+    // The confirmed resend is the same selection: its level commits with the model.
+    const arg = `${pick.model ?? ''}${pick.provider ? ` --provider ${pick.provider}` : ''}${pick.reasoning ? ` --reasoning ${pick.reasoning}` : ''}`
 
     patchOverlayState({
       confirm: {
