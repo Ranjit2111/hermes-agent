@@ -187,6 +187,22 @@ def test_provider_pick_over_auto_template_sends_its_key_to_its_own_endpoint(tmp_
     assert runtime['base_url'].startswith('https://generativelanguage.googleapis.com/')
 
 
+def test_provider_alias_pick_keeps_the_profiles_endpoint(tmp_path, monkeypatch):
+    """`--provider vllm` over `provider: custom` + a local base_url is the same provider under an
+    alias: the pick must keep the configured endpoint and key, not fail with no endpoint."""
+    from gateway.session_policy import build_policy
+    from hermes_cli.runtime_provider import frozen_runtime_config, resolve_runtime_provider
+    for var in ('CUSTOM_BASE_URL', 'OPENAI_BASE_URL'):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv('LOCAL_LLM_KEY', 'sk-local')
+    cfg = {'model': {'default': 'qwen', 'provider': 'custom',
+                     'base_url': 'http://localhost:1234/v1', 'key_env': 'LOCAL_LLM_KEY'}}
+    policy = build_policy(dict(cwd=str(tmp_path), model='qwen', provider='vllm'), cfg)
+    with frozen_runtime_config(policy.config()):
+        runtime = resolve_runtime_provider(requested='vllm', target_model='qwen')
+    assert (runtime['base_url'], runtime['api_key']) == ('http://localhost:1234/v1', 'sk-local')
+
+
 def test_unlimited_max_turns_spellings_create_an_uncapped_session(tmp_path):
     """`--max-turns 0` / -1 / none / unlimited meant "no cap" before the gateway cutover: session.create
     freezes them as the unlimited budget, and `hermes chat` sends 0 instead of dropping it as falsy."""

@@ -354,8 +354,10 @@ def _apply_launch_overrides(params, config):
     from urllib.parse import urlsplit
     from hermes_cli.config import resolve_turn_limit
     from hermes_constants import parse_reasoning_effort
-    held = str(config.get('model', {}).get('provider') or '').strip().lower()
-    if 'provider' in params and held != str(params['provider']).strip().lower():
+    from hermes_cli.models import normalize_provider
+    held = str(config.get('model', {}).get('provider') or '').strip()
+    # Aliases (`vllm` for `custom`) name the same provider, so they keep its route.
+    if 'provider' in params and not (held and normalize_provider(held) == normalize_provider(str(params['provider']))):
         model = config.setdefault('model', {})
         # A provider pick is a route change: the profile's endpoint, wire protocol and
         # credential pointers belong to the provider being replaced, and pairing the new one
