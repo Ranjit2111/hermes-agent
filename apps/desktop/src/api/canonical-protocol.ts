@@ -233,17 +233,22 @@ export class CanonicalDesktopProtocol {
     const data = (error as { data?: { revision?: unknown; execution_generation?: unknown } })?.data
     const owner = canonicalSessionKey(params.session_id, params.profile)
 
-    if (typeof data?.revision === 'number') { this.revisions.set(owner, data.revision) }
+    // An older request's refusal can arrive after a newer edit committed: never move the fences backwards.
+    if (typeof data?.revision === 'number' && data.revision > (this.revisions.get(owner) ?? -1)) { this.revisions.set(owner, data.revision) }
 
-    if (typeof data?.execution_generation === 'number') { this.generations.set(owner, data.execution_generation) }
+    if (typeof data?.execution_generation === 'number' && data.execution_generation > (this.generations.get(owner) ?? -1)) {
+      this.generations.set(owner, data.execution_generation)
+    }
   }
 
   // A fence refusal of a value pick (model / reasoning) that named fresh fences is retried once at them:
-  // re-applying the same value is harmless, unlike a CAS edit of shared metadata.
+  // re-applying the same value is harmless, unlike a CAS edit of shared metadata. Only while it is still the
+  // session's current retained request: a newer pick retired it, and re-preparing it would undo that pick.
   retryableFence(params: Record<string, unknown>, error: unknown): boolean {
     const data = (error as { data?: { reason?: unknown; revision?: unknown } })?.data
+    const current = [...this.mutations.values()].some(mutation => mutation.request_id === params.request_id)
 
-    return ['model', 'reasoning'].includes(params.operation as string) && typeof data?.revision === 'number'
+    return current && ['model', 'reasoning'].includes(params.operation as string) && typeof data?.revision === 'number'
       && (data.reason === 'revision_conflict' || data.reason === 'stale_generation')
   }
 

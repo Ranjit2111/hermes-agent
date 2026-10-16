@@ -55,3 +55,29 @@ test('a fence refusal naming fresh fences is retried once at them, never looped'
   await expect(refused.request('config.set', pick)).rejects.toThrow('stale_generation')
   expect(looping).toHaveLength(2)
 })
+
+test('an older pick refused after a newer pick committed is not retried and never rewinds the fences', async () => {
+  let refuseA: (error: unknown) => void = () => {}
+
+  const { calls, client } = await attached(params => {
+    const model = (params.payload as { model: string }).model
+
+    if (model === 'a' && calls.filter(call => (call.params.payload as { model: string }).model === 'a').length === 1) {
+      return new Promise((_resolve, reject) => { refuseA = reject })
+    }
+
+    return { session_id: 's', operation: 'model', model, revision: 7, execution_generation: 4 }
+  })
+
+  const a = client.request('config.set', { ...pick, value: 'a --provider custom' })
+  await vi.waitFor(() => expect(calls).toHaveLength(1))
+  await expect(client.request('config.set', { ...pick, value: 'b --provider custom' })).resolves.toMatchObject({ model: 'b' })
+  // A's stale-fence reply arrives after B committed, naming the fences B moved past.
+  refuseA(new JsonRpcGatewayError('revision_conflict', { code: 4001, data: { reason: 'revision_conflict', revision: 5, execution_generation: 3 } }))
+  await expect(a).rejects.toThrow('revision_conflict')
+  expect(calls.map(call => (call.params.payload as { model: string }).model)).toEqual(['a', 'b'])
+
+  await client.request('config.set', { ...pick, value: 'c --provider custom' })
+  // B's receipt moved the revision to 7; A's late refusal naming 5 must not rewind it.
+  expect(calls[2].params).toMatchObject({ expected_revision: 7 })
+})
