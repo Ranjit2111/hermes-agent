@@ -185,3 +185,47 @@ async def test_a_newer_idle_pick_replaces_an_older_pending_pick(tmp_path, monkey
     finally:
         await owner.close()
         store.close_all_db_handles()
+
+
+@pytest.mark.asyncio
+async def test_pending_pick_writes_do_not_stall_the_event_loop(tmp_path, monkeypatch):
+    import time
+    from gateway.session_contract import Submission
+    started, release = threading.Event(), asyncio.Event()
+    state = {}
+
+    async def handle(event):
+        if event.text == 'RUNNING':
+            started.set()
+            await release.wait()
+        return 'ok'
+    store, db, authority, owner, ref = _owner(tmp_path, monkeypatch, handle)
+    state.update(authority=authority, ref=ref)
+    gaps = []
+
+    async def heartbeat():
+        while True:
+            before = time.monotonic()
+            await asyncio.sleep(0.01)
+            gaps.append(time.monotonic() - before)
+    try:
+        await authority.submit(owner.actor, Submission('running', ref, {'text': 'RUNNING'}, 'queue'))
+        await async_wait_until(started.is_set, timeout=10, what='the first turn is running')
+        write = db._execute_write
+
+        def contended(fn, *a, **k):  # a writer lock held elsewhere (transcript write, maintenance)
+            time.sleep(0.4)
+            return write(fn, *a, **k)
+        monkeypatch.setattr(db, '_execute_write', contended)
+        beat = asyncio.create_task(heartbeat())
+        reply = await _mutate(owner, db, ref, 'pick', 'picked')
+        assert reply['result']['status'] == 'deferred', reply
+        release.set()
+        await async_wait_until(lambda: _running_model(authority, ref) == 'picked',
+                               timeout=20, what='the pick published at the turn boundary')
+        beat.cancel()
+        assert max(gaps) < 0.3, max(gaps)
+    finally:
+        release.set()
+        await owner.close()
+        store.close_all_db_handles()

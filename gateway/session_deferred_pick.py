@@ -56,8 +56,11 @@ async def apply_deferred_pick(authority, ref, live):
     from gateway.session_mutations import write_mutation
     from hermes_state_mutation_retirement import has_mutation_receipt
     key = _PREFIX + ref.session_id
-    with authority.db._read_ctx() as conn:
-        stored = conn.execute('SELECT value FROM state_meta WHERE key=?', (key,)).fetchone()
+
+    def read():
+        with authority.db._read_ctx() as conn:
+            return conn.execute('SELECT value FROM state_meta WHERE key=?', (key,)).fetchone()
+    stored = await asyncio.to_thread(read)
     if stored is None:
         return
     pick = json.loads(stored[0])
@@ -82,7 +85,7 @@ async def apply_deferred_pick(authority, ref, live):
         if exc.reason == 'session_busy':
             return
         result = {'session_id': ref.session_id, 'operation': 'model', 'status': 'refused', 'reason': exc.reason}
-    authority.db._execute_write(lambda conn: conn.execute(
+    await asyncio.to_thread(authority.db._execute_write, lambda conn: conn.execute(
         'DELETE FROM state_meta WHERE key=? AND value=?', (key, stored[0])))
     if result.get('status') in {'refused', 'confirmation_required'}:
         logger.warning('Deferred model pick on %s not applied: %s', ref.session_id,

@@ -100,7 +100,8 @@ async def _owned_mutation(authority, actor, ref, params):
                 if params.get('operation') != 'model' or getattr(exc, 'reason', 'session_busy') != 'session_busy':
                     raise
                 from gateway.session_deferred_pick import defer_pick
-                return defer_pick(authority, actor, ref, params)
+                # Its own BEGIN IMMEDIATE: off the loop, like the receipt commit.
+                return await asyncio.to_thread(defer_pick, authority, actor, ref, params)
     if params.get('operation') in {*_POLICY, 'compress', 'reset'}:
         authority._schedule(ref)
     return result
