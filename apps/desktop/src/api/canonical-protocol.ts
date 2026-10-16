@@ -229,6 +229,22 @@ export class CanonicalDesktopProtocol {
     // A confirmed fence refusal did not mutate. Ambiguous transport failures keep
     // the original revision/id so a retry cannot overwrite another user's edit.
     for (const [key, mutation] of this.mutations) { if (mutation.request_id === params.request_id) { this.mutations.delete(key) } }
+    // The owner names its current fences on the refusal: adopt them so the next attempt presents them.
+    const data = (error as { data?: { revision?: unknown; execution_generation?: unknown } })?.data
+    const owner = canonicalSessionKey(params.session_id, params.profile)
+
+    if (typeof data?.revision === 'number') { this.revisions.set(owner, data.revision) }
+
+    if (typeof data?.execution_generation === 'number') { this.generations.set(owner, data.execution_generation) }
+  }
+
+  // A fence refusal of a value pick (model / reasoning) that named fresh fences is retried once at them:
+  // re-applying the same value is harmless, unlike a CAS edit of shared metadata.
+  retryableFence(params: Record<string, unknown>, error: unknown): boolean {
+    const data = (error as { data?: { reason?: unknown; revision?: unknown } })?.data
+
+    return ['model', 'reasoning'].includes(params.operation as string) && typeof data?.revision === 'number'
+      && (data.reason === 'revision_conflict' || data.reason === 'stale_generation')
   }
 
   // Wire method for a prepared request: composer metadata, branch and the
@@ -578,6 +594,9 @@ export class CanonicalDesktopProtocol {
     }
 
     if (method === 'slash.exec') { return { ...value, type: 'exec', output: mutationSummary(params.operation as string, value) } }
+
+    // A pick on a running session is recorded for the next turn (the legacy `deferred` answer).
+    if (params.operation === 'model' && value.status === 'deferred') { return { ...value, ok: true, deferred: true } }
 
     // The legacy config.set answer every reasoning caller reads (`result.value`).
     return params.operation === 'reasoning' ? { ...value, ok: true, value: value.effort } : { ...value, ok: true }
