@@ -286,3 +286,40 @@ async def test_a_guarded_deferred_pick_asks_for_confirmation_instead_of_being_dr
         release.set()
         await owner.close()
         store.close_all_db_handles()
+
+
+@pytest.mark.asyncio
+async def test_a_refused_deferred_pick_names_the_reason_and_the_committed_model(tmp_path, monkeypatch):
+    from gateway.session_contract import Submission
+    from hermes_cli import model_switch
+    started, release = threading.Event(), asyncio.Event()
+    events = []
+
+    async def handle(event):
+        if event.text == 'RUNNING':
+            started.set()
+            await release.wait()
+        return 'ok'
+    store, db, authority, owner, ref = _owner(tmp_path, monkeypatch, handle)
+    switch = model_switch.switch_model
+    monkeypatch.setattr(model_switch, 'switch_model', lambda **k: model_switch.ModelSwitchResult(
+        success=False, new_model='', target_provider='') if k['raw_input'] == 'gone' else switch(**k))
+    stream = authority.sessions[ref.session_id].event_stream
+    publish = stream.publish
+    monkeypatch.setattr(stream, 'publish', lambda sid, payload, **k: (
+        events.append((k.get('event_type'), payload)), publish(sid, payload, **k))[1])
+    try:
+        await authority.submit(owner.actor, Submission('running', ref, {'text': 'RUNNING'}, 'queue'))
+        await async_wait_until(started.is_set, timeout=10, what='the first turn is running')
+        assert (await _mutate(owner, db, ref, 'pick', 'gone'))['result']['status'] == 'deferred'
+        release.set()
+
+        def refused():
+            return [p for t, p in events if t == 'session.updated' and p.get('status') == 'refused']
+        await async_wait_until(lambda: refused(), timeout=10, what='the refusal was announced')
+        assert refused()[0].items() >= {'operation': 'model', 'reason': 'model_resolution_failed',
+                                     'target_model': 'gone', 'model': 'frozen'}.items()
+    finally:
+        release.set()
+        await owner.close()
+        store.close_all_db_handles()

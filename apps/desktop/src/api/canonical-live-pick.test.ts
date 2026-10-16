@@ -81,3 +81,14 @@ test('an older pick refused after a newer pick committed is not retried and neve
   // B's receipt moved the revision to 7; A's late refusal naming 5 must not rewind it.
   expect(calls[2].params).toMatchObject({ expected_revision: 7 })
 })
+
+test("a guarded next-turn pick's confirmed resend carries the owner's token from its session.updated ask", async () => {
+  const { calls, client } = await attached(params => ({ session_id: 's', operation: 'model', model: (params.payload as { model: string }).model, revision: 5 }))
+  const protocol = (client as unknown as { protocol: { event: (event: Record<string, unknown>) => void } }).protocol
+
+  protocol.event({ type: 'session.updated', session_id: 's', payload: {
+    session_id: 's', operation: 'model', status: 'confirmation_required', confirm: 'owner-token', payload: { model: 'guarded', provider: 'custom' } } })
+  await client.request('config.set', { ...pick, value: 'guarded --provider custom --session', confirm_expensive_model: true })
+
+  expect(calls[0].params.payload).toEqual({ model: 'guarded', provider: 'custom', confirm: 'owner-token' })
+})

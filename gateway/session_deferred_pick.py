@@ -102,4 +102,10 @@ async def apply_deferred_pick(authority, ref, live):
         'DELETE FROM state_meta WHERE key=? AND value=?', (key, stored[0])))
     if result.get('status') == 'refused':
         logger.warning('Deferred model pick on %s not applied: %s', ref.session_id, result.get('reason'))
-        live.event_stream.publish(ref.session_id, result, event_type='session.updated')
+        # Named for the viewers that showed "applies from your next message": the target that was
+        # refused, and the committed model they must show again.
+        current = await asyncio.to_thread(authority.db.get_session, ref.session_id) or {}
+        provider = json.loads(current.get('model_config') or '{}').get('provider')
+        live.event_stream.publish(ref.session_id, {
+            **result, 'target_model': pick['payload']['model'], 'model': current.get('model'),
+            **({'provider': provider} if provider else {})}, event_type='session.updated')

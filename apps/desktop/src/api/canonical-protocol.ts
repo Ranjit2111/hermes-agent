@@ -517,6 +517,13 @@ export class CanonicalDesktopProtocol {
 
     this.adoptEventRevision(event.type, sid, profile, payload)
 
+    // A pick deferred during a turn asked at the boundary (a guarded target): keep the owner's token, so
+    // the user's confirmed resend of that target carries it exactly like an idle pick's confirmation.
+    if (event.type === 'session.updated' && payload.operation === 'model' && payload.status === 'confirmation_required'
+        && typeof payload.confirm === 'string' && payload.payload && typeof payload.payload === 'object') {
+      this.modelConfirmations.set(this.modelConfirmationKey({ session_id: sid, profile }, payload.payload as Record<string, unknown>), { token: payload.confirm, sent: false })
+    }
+
     if (typeof payload.prompt_id === 'string') {
       if (event.type.endsWith('.settled')) { this.prompts.delete(canonicalSessionKey(payload.prompt_id, profile));
 
