@@ -106,3 +106,56 @@ async def test_revision_conflict_refusal_carries_the_fresh_fences(tmp_path, monk
     finally:
         await owner.close()
         store.close_all_db_handles()
+
+
+async def _mutate(owner, db, ref, rid, model, snap=None, *, call=1):
+    snap = snap or db.get_session(ref.session_id)
+    return await owner.dispatch({'id': call, 'method': 'session.mutate', 'params': {
+        'session_id': ref.session_id, 'request_id': rid, 'expected_revision': snap['runtime_revision'],
+        'expected_generation': snap['runtime_generation'], 'operation': 'model', 'payload': {'model': model}}})
+
+
+async def _run_turn(authority, owner, db, ref, name):
+    from gateway.session_contract import Submission
+    import hermes_state_runtime as rt
+    turn = await authority.submit(owner.actor, Submission(name, ref, {'text': name}, 'queue'))
+    await async_wait_until(
+        lambda: rt.get_session_admission(db, admission_id=turn.admission_id)['status'] == 'terminal',
+        timeout=10, what=f'turn {name} settled')
+
+
+@pytest.mark.asyncio
+async def test_a_retried_deferred_pick_does_not_undo_a_newer_pick(tmp_path, monkeypatch):
+    from gateway.session_contract import Submission
+    started, release = threading.Event(), asyncio.Event()
+    seen = []
+    state = {}
+
+    async def handle(event):
+        seen.append((event.text, _running_model(state['authority'], state['ref'])))
+        if event.text == 'RUNNING':
+            started.set()
+            await release.wait()
+        return 'ok'
+    store, db, authority, owner, ref = _owner(tmp_path, monkeypatch, handle)
+    state.update(authority=authority, ref=ref)
+    try:
+        await authority.submit(owner.actor, Submission('running', ref, {'text': 'RUNNING'}, 'queue'))
+        await async_wait_until(started.is_set, timeout=10, what='the first turn is running')
+        snap = db.get_session(ref.session_id)
+        first = await _mutate(owner, db, ref, 'pick-a', 'model-a', snap)
+        assert first['result']['status'] == 'deferred', first
+        newer = await _mutate(owner, db, ref, 'pick-b', 'model-b', call=2)
+        assert newer['result']['status'] == 'deferred', newer
+        # A's reply was lost: the client retries it with the same identity and fences.
+        retry = await _mutate(owner, db, ref, 'pick-a', 'model-a', snap, call=3)
+        assert retry['result'] == first['result']
+        release.set()
+        await _run_turn(authority, owner, db, ref, 'NEXT')
+        assert seen[-1] == ('NEXT', 'model-b')
+        assert db.get_session(ref.session_id)['model'] == 'model-b'
+    finally:
+        release.set()
+        await owner.close()
+        store.close_all_db_handles()
+

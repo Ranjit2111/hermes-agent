@@ -269,6 +269,17 @@ def recover_session_inputs(db, *, epoch: int) -> int:
     return db._execute_write(write)
 
 
+def mutation_receipt_key(principal_id, session_id, request_id, *, operation, payload, expected_revision,
+                         expected_generation=None):
+    """``(state_meta key, digest)`` of a mutation request's durable exact-retry receipt."""
+    key = 'gateway.mutation.v1.' + admission_fingerprint(
+        canonical_target=session_id, payload={'principal': principal_id, 'request': request_id})
+    fingerprint = {'operation': operation, 'payload': payload, 'expected_revision': expected_revision}
+    if expected_generation is not None:
+        fingerprint['expected_generation'] = expected_generation
+    return key, admission_fingerprint(canonical_target=session_id, payload=fingerprint)
+
+
 def mutate_runtime_session(db, *, epoch: int, principal_id: str, session_id: str,
                            request_id: str, expected_revision: int,
                            operation: str, payload: dict, expected_generation: int | None = None,
@@ -291,12 +302,8 @@ def mutate_runtime_session(db, *, epoch: int, principal_id: str, session_id: str
         raise RuntimeStoreError('invalid_params')
     # Snapshot caller data before waiting for the writer lock.
     payload = json.loads(_json(payload))
-    key = 'gateway.mutation.v1.' + admission_fingerprint(
-        canonical_target=session_id, payload={'principal': principal_id, 'request': request_id})
-    fingerprint = {'operation': operation, 'payload': payload, 'expected_revision': expected_revision}
-    if expected_generation is not None:
-        fingerprint['expected_generation'] = expected_generation
-    digest = admission_fingerprint(canonical_target=session_id, payload=fingerprint)
+    key, digest = mutation_receipt_key(principal_id, session_id, request_id, operation=operation, payload=payload,
+                                       expected_revision=expected_revision, expected_generation=expected_generation)
 
     def write(conn):
         _epoch(conn, epoch)
