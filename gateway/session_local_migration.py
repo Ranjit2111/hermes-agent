@@ -122,7 +122,19 @@ def adopt_legacy_session(authority, actor, row):
     params, api_mode = legacy_launch_params(row)
     params['source'] = LEGACY_CREATION_SOURCES.get(row['source'], row['source'])
     private = {}
-    policy = build_policy(params, _load_gateway_config(), private_secrets=private)
+    config = _load_gateway_config()
+    model_cfg = config.get('model')
+    if isinstance(model_cfg, dict) and ('provider' in params or 'base_url' in params):
+        from hermes_cli.route_identity import normalize_route_base_url
+        provider = params.get('provider', model_cfg.get('provider'))
+        if (str(model_cfg.get('provider') or '').strip().lower() != str(provider or '').strip().lower()
+                or normalize_route_base_url(model_cfg.get('base_url'))
+                != normalize_route_base_url(params.get('base_url', model_cfg.get('base_url')))):
+            # Another route than the profile's: its endpoint, wire mode, context pin and credential
+            # (inline key, key_env pointer) stay with the profile, never paired with the legacy route.
+            config['model'] = {k: v for k, v in model_cfg.items() if k not in (
+                'base_url', 'api_mode', 'context_length', 'api_key', 'api', 'key_env', 'api_key_env')}
+    policy = build_policy(params, config, private_secrets=private)
     if api_mode:
         config = json.loads(policy.config_json)
         config.setdefault('model', {})['api_mode'] = api_mode
