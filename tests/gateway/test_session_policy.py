@@ -169,6 +169,24 @@ def test_provider_override_drops_the_previous_providers_route(tmp_path):
     assert unrecorded.config()['model'] == {'default': 'm', 'provider': 'xiaomi'}
 
 
+def test_provider_pick_over_auto_template_sends_its_key_to_its_own_endpoint(tmp_path, monkeypatch):
+    """#139018: the install template (`provider: auto` + OpenRouter base_url) plus a Desktop
+    Google AI Studio pick resolved provider=gemini against openrouter.ai, so the Google key went
+    to OpenRouter (401). The frozen route must resolve to Google's own endpoint."""
+    from gateway.session_policy import build_policy
+    from hermes_cli.runtime_provider import frozen_runtime_config, resolve_runtime_provider
+    monkeypatch.setenv('GOOGLE_API_KEY', 'sk-google')
+    monkeypatch.setenv('OPENROUTER_API_KEY', 'sk-openrouter')
+    cfg = {'model': {'default': 'anthropic/claude-opus-4.6', 'provider': 'auto',
+                     'base_url': 'https://openrouter.ai/api/v1'}}
+    policy = build_policy(dict(cwd=str(tmp_path), source='gui', model='gemini-flash-latest', provider='gemini'), cfg)
+    with frozen_runtime_config(policy.config()):
+        runtime = resolve_runtime_provider(requested='gemini', target_model='gemini-flash-latest')
+    assert (runtime['provider'], runtime['api_key']) == ('gemini', 'sk-google')
+    assert 'openrouter.ai' not in runtime['base_url']
+    assert runtime['base_url'].startswith('https://generativelanguage.googleapis.com/')
+
+
 def test_unlimited_max_turns_spellings_create_an_uncapped_session(tmp_path):
     """`--max-turns 0` / -1 / none / unlimited meant "no cap" before the gateway cutover: session.create
     freezes them as the unlimited budget, and `hermes chat` sends 0 instead of dropping it as falsy."""
