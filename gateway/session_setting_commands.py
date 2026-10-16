@@ -84,7 +84,9 @@ def defer_local_model_pick(authority, live, result, effort=''):
     from hermes_state_local import local_receipt
     sid = live.source.chat_id
     owner = SimpleNamespace(subject=local_receipt(authority.db, sid)['principal_id'])
-    payload = {'model': result.new_model}
+    # The alias the user typed, not the bare model it names: two aliases may name one model on one
+    # provider at different endpoints, and re-resolving the bare id picks the first such alias.
+    payload = {'model': result.resolved_via_alias or result.new_model}
     if result.target_provider:
         payload['provider'] = result.target_provider
     if effort:
