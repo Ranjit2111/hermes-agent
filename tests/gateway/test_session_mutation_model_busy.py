@@ -23,7 +23,8 @@ def _owner(tmp_path, monkeypatch, handle):
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
     db = store._db
     runner = SimpleNamespace(session_store=store, _session_db=db, adapters={}, _draining=False,
-                             _evict_cached_agent=lambda route: None, _handle_message=handle,
+                             _evict_cached_agent=lambda route: None, _cached_agent_for=lambda route: None,
+                             _handle_message=handle,
                              _resolve_session_agent_runtime=lambda **k: ('frozen', {}))
     runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
     authority = SessionAuthority(runner, profile_id='owned', instance_id='owner', db=db,

@@ -413,6 +413,25 @@ class GatewayModelCommandsMixin:
 
     async def _commit_model_switch_locked(self, result, ctx: _ModelSwitchContext, *, source, picker: bool) -> str:
         one_turn = False if picker else ctx.one_turn
+        from gateway.session_setting_commands import defer_local_model_pick, local_authority_live
+        authority, live = local_authority_live(self, source)
+        if live is not None:
+            # A local session runs its frozen policy: the owner's canonical model mutation is the
+            # only commit, landing at the next turn boundary (this command is the running turn).
+            if one_turn:
+                return t("gateway.model.error_prefix", error=t("gateway.model.err_once_local"))
+            await asyncio.to_thread(defer_local_model_pick, authority, live, result)
+            self._record_switch_metrics(result, ctx, source)
+            global_error = None
+            if ctx.persist_global:
+                try:
+                    await _persist_model_switch_to_config(result, ctx.config_path)
+                except Exception as e:
+                    logger.warning("Failed to persist model switch", exc_info=True)
+                    global_error = t("gateway.model.err_config_not_updated", error=str(e) or type(e).__name__)
+            return await self._model_switch_confirmation(
+                result, ctx, one_turn=False, picker=picker, global_error=global_error) + (
+                "\n" + t("gateway.model.local_next_turn"))
         error = self._switch_cached_agent_model(result, ctx, picker)
         if error is not None:
             return error
