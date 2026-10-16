@@ -431,7 +431,8 @@ def _resolve_toolsets(params, config, source, safe_mode, coding_posture=False, b
             server = name[4:] if name.startswith('mcp-') and name not in configured else name
             if server in configured and server not in enabled_servers:
                 # Picking a disabled server must not match nothing and fall through to every enabled one.
-                _refuse('toolsets', f'MCP server {server!r} is disabled in config')
+                why = 'is disabled in config' if isinstance(configured[server], dict) else 'has no usable config entry'
+                _refuse('toolsets', f'MCP server {server!r} {why}')
         if 'desktop_ui' in explicit and source != 'gui':
             _refuse('toolsets', f'desktop_ui is only available on the Desktop, not on {source}')
         config.setdefault('platform_toolsets', {})['acp' if source == 'acp' else 'cli'] = explicit
