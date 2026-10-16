@@ -5,6 +5,9 @@ from hermes_state_local_lineage import validate_local_lineage
 from hermes_state_mutation_guards import require_target_advanceable
 from hermes_state_runtime import RuntimeStoreError
 
+# A model pick made while a turn ran, committed at the next turn boundary (gateway/session_deferred_pick.py).
+DEFERRED_PICK_PREFIX = 'gateway.deferred_pick.v1.'
+
 
 def local_snapshot(db, conn, session_id):
     row = conn.execute('SELECT value FROM state_meta WHERE key=?', (POLICY_PREFIX + session_id,)).fetchone()
@@ -50,6 +53,8 @@ def model_in_transaction(db, conn, session_id, payload, prepared):
     model_config = json.loads(row[0] or '{}')
     model_config['provider'] = config['provider']
     conn.execute('UPDATE sessions SET model=?,model_config=? WHERE id=?', (model, _json(model_config), target))
+    # This selection is newer than any pick still waiting for a turn boundary: that pick is superseded.
+    conn.execute('DELETE FROM state_meta WHERE key=?', (DEFERRED_PICK_PREFIX + session_id,))
     return {session_id, target}, {'model': model, 'provider': config['provider'], 'execution_generation': generation}
 
 

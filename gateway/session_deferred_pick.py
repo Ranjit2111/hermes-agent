@@ -7,10 +7,10 @@ drain at the next claim boundary, when nothing is executing. The running turn ke
 import json
 import logging
 
+from hermes_state_mutation_prepared import DEFERRED_PICK_PREFIX as _PREFIX
 from hermes_state_runtime import RuntimeStoreError
 
 logger = logging.getLogger(__name__)
-_PREFIX = 'gateway.deferred_pick.v1.'
 
 
 def defer_pick(authority, actor, ref, params):

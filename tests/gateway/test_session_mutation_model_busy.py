@@ -159,3 +159,29 @@ async def test_a_retried_deferred_pick_does_not_undo_a_newer_pick(tmp_path, monk
         await owner.close()
         store.close_all_db_handles()
 
+
+@pytest.mark.asyncio
+async def test_a_newer_idle_pick_replaces_an_older_pending_pick(tmp_path, monkeypatch):
+    from gateway.session_deferred_pick import defer_pick
+    seen = []
+    state = {}
+
+    async def handle(event):
+        seen.append((event.text, _running_model(state['authority'], state['ref'])))
+        return 'ok'
+    store, db, authority, owner, ref = _owner(tmp_path, monkeypatch, handle)
+    state.update(authority=authority, ref=ref)
+    try:
+        # An older pick still pending when the drain is between turns (awaiting delivery).
+        snap = db.get_session(ref.session_id)
+        defer_pick(authority, owner.actor, ref, {
+            'session_id': ref.session_id, 'request_id': 'old', 'expected_revision': snap['runtime_revision'],
+            'expected_generation': snap['runtime_generation'], 'operation': 'model', 'payload': {'model': 'older'}})
+        newer = await _mutate(owner, db, ref, 'new', 'newer')
+        assert newer['result']['model'] == 'newer', newer
+        await _run_turn(authority, owner, db, ref, 'NEXT')
+        assert seen == [('NEXT', 'newer')]
+        assert db.get_session(ref.session_id)['model'] == 'newer'
+    finally:
+        await owner.close()
+        store.close_all_db_handles()
