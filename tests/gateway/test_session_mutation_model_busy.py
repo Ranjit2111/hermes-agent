@@ -206,7 +206,7 @@ async def test_pending_pick_writes_do_not_stall_the_event_loop(tmp_path, monkeyp
     async def heartbeat():
         while True:
             before = time.monotonic()
-            await asyncio.sleep(0.01)
+            await asyncio.sleep(0.01)  # health: allow HX013 -- the probe measures loop latency itself
             gaps.append(time.monotonic() - before)
     try:
         await authority.submit(owner.actor, Submission('running', ref, {'text': 'RUNNING'}, 'queue'))
@@ -214,7 +214,7 @@ async def test_pending_pick_writes_do_not_stall_the_event_loop(tmp_path, monkeyp
         write = db._execute_write
 
         def contended(fn, *a, **k):  # a writer lock held elsewhere (transcript write, maintenance)
-            time.sleep(0.4)
+            time.sleep(0.4)  # health: allow HX013 -- a writer lock held elsewhere, the stall under test
             return write(fn, *a, **k)
         monkeypatch.setattr(db, '_execute_write', contended)
         beat = asyncio.create_task(heartbeat())
