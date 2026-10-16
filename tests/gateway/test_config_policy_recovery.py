@@ -141,3 +141,36 @@ def test_an_unrelated_secret_edit_keeps_the_route_and_a_gone_route_key_is_named(
         policy.config(owner())
     assert refused.value.field == 'model.api_key'
     assert 'route-token' not in str(refused.value.detail) and 'another' not in str(refused.value.detail)
+
+
+def _bound_session(tmp_path, monkeypatch, cfg):
+    """A session frozen on *cfg*, plus a fresh-authority factory (a restarted owner, no secret cache)."""
+    from gateway.session_policy import build_policy, bind_launch_key
+    home = tmp_path / 'profile'
+    home.mkdir()
+    monkeypatch.setenv('HERMES_HOME', str(home))
+    (home / 'config.yaml').write_text(json.dumps(cfg))
+
+    def owner():
+        return SimpleNamespace(db=SimpleNamespace(db_path=home / 'state.db'),
+                               profile_id='owned', instance_id='new', epoch=2)
+    private = {}
+    policy = build_policy({'cwd': str(home), 'model': 'frozen'}, cfg, private_secrets=private)
+    return bind_launch_key(owner(), 'session', policy, None, config_secrets=private), owner, home / 'config.yaml'
+
+
+def test_an_unchanged_custom_providers_key_survives_a_restart(tmp_path, monkeypatch):
+    """A route key saved under a list (``custom_providers[0].api_key``) is found again after a
+    restart; it used to read as removed and refuse every turn of the session."""
+    from hermes_state_runtime import RuntimeStoreError
+    cfg = {'model': {'provider': 'custom:local', 'default': 'm'},
+           'custom_providers': [{'name': 'Local', 'base_url': 'http://127.0.0.1:1234/v1', 'api_key': 'cp-token'}]}
+    policy, owner, config_path = _bound_session(tmp_path, monkeypatch, cfg)
+    assert policy.config(owner())['custom_providers'][0]['api_key'] == 'cp-token'
+
+    cfg['custom_providers'][0]['api_key'] = 'rotated-token'
+    config_path.write_text(json.dumps(cfg))
+    with pytest.raises(RuntimeStoreError) as refused:
+        policy.config(owner())
+    assert refused.value.field == 'custom_providers.0.api_key'
+    assert 'changed in' in refused.value.detail

@@ -18,7 +18,10 @@ def _defined(root, path):
     """The value *root* defines at *path*, else ``_ABSENT`` when the key is simply not there."""
     value = root
     for key in path:
-        if not isinstance(value, dict) or key not in value:
+        if isinstance(value, list) and type(key) is int:
+            if not 0 <= key < len(value):
+                return _ABSENT
+        elif not isinstance(value, dict) or key not in value:
             return _ABSENT
         value = value[key]
     return value
