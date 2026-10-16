@@ -46,6 +46,7 @@ import { markBubbleShown, newlyStartedRows } from './pendingBubbles.js'
 import { flashGoodVibes, flashPet } from './petFlashStore.js'
 import { forgetServerRequest } from './serverRequestStore.js'
 import { noteCanonicalCompletion } from './slash/canonicalSessionCommands.js'
+import { mutateCanonicalSession } from './slash/canonicalSessionControls.js'
 import { loadSlashCatalog } from './slashCatalog.js'
 import { reportStartupLatency } from './startupLatency.js'
 import { markNextSubmitVoice } from './submissionCore.js'
@@ -576,6 +577,51 @@ function handleErrorEvent(
   setStatus('ready')
 }
 
+/** A model pick made during a turn resolves at the next turn boundary. The owner announces a pick
+ *  that did not apply on `session.updated`: a refusal is named and the committed model shown again;
+ *  a guarded target asks with the same dialog as `/model`. Applied picks arrive as session.info. */
+function applyDeferredPickOutcome(
+  update: Record<string, unknown> | undefined,
+  sid: null | string | undefined,
+  gw: { request: (method: string, params?: Record<string, unknown>) => Promise<unknown> },
+  sys: (text: string) => void
+): void {
+  if (update?.operation !== 'model' || !sid) {
+    return
+  }
+
+  if (update.status === 'refused') {
+    const info = getUiState().info
+
+    if (info && typeof update.model === 'string' && update.model) {
+      patchUiState({ info: { ...info, model: update.model, ...(typeof update.provider === 'string' ? { provider: update.provider } : {}) } })
+    }
+
+    sys(t('slashCmd.session.model.deferredRefused', String(update.target_model ?? ''), String(update.reason ?? 'refused')))
+
+    return
+  }
+
+  if (update.status === 'confirmation_required' && typeof update.confirm === 'string') {
+    const pick = (update.payload ?? {}) as { model?: string; provider?: string }
+    const arg = `${pick.model ?? ''}${pick.provider ? ` --provider ${pick.provider}` : ''}`
+
+    patchOverlayState({
+      confirm: {
+        cancelLabel: t('slashCmd.session.model.cancel'),
+        confirmLabel: t('slashCmd.session.model.switchAnyway'),
+        danger: true,
+        detail: (update.confirm_message as string | undefined) || t('slashCmd.session.model.expensiveDetail'),
+        onConfirm: () =>
+          void mutateCanonicalSession(gw, sid, 'model', arg, undefined, update.confirm as string).catch((error: unknown) =>
+            sys(`error: ${error instanceof Error ? error.message : String(error)}`)
+          ),
+        title: t('slashCmd.session.model.confirmTitle', String(update.target_model ?? pick.model ?? ''))
+      }
+    })
+  }
+}
+
 interface SessionInfoSinks {
   appendMessage: (msg: Msg) => void
   setHistoryItems: GatewayEventHandlerContext['transcript']['setHistoryItems']
@@ -1044,6 +1090,11 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
       case 'session.info':
         applySessionInfo(ev.payload, { appendMessage, setHistoryItems, setStatus })
+
+        return
+
+      case 'session.updated' as typeof ev.type:
+        applyDeferredPickOutcome(ev.payload as Record<string, unknown> | undefined, sid, gw, sys)
 
         return
 
