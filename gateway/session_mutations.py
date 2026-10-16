@@ -8,6 +8,7 @@ import asyncio
 from contextlib import nullcontext
 from functools import partial
 
+from hermes_state_mutation_guards import MUTATION_GUARD_REFUSALS
 from hermes_state_runtime import RuntimeStoreError, mutate_runtime_session
 
 _METADATA = frozenset({'rename', 'archive', 'sidebar'})
@@ -92,7 +93,14 @@ async def _owned_mutation(authority, actor, ref, params):
             result = await _mutate_session(authority, actor, ref, params, commit_lock=live.mutation_lock)
     else:
         async with live.mutation_lock:
-            result = await _mutate_session(authority, actor, ref, params)
+            try:
+                result = await _mutate_session(authority, actor, ref, params)
+            except (RuntimeStoreError, *MUTATION_GUARD_REFUSALS) as exc:
+                # A pick on a running session is for the next turn (the running turn keeps its route).
+                if params.get('operation') != 'model' or getattr(exc, 'reason', 'session_busy') != 'session_busy':
+                    raise
+                from gateway.session_deferred_pick import defer_pick
+                return defer_pick(authority, actor, ref, params)
     if params.get('operation') in {*_POLICY, 'compress', 'reset'}:
         authority._schedule(ref)
     return result
