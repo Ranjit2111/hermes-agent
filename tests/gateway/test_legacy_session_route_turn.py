@@ -93,6 +93,31 @@ def test_adopted_legacy_session_turn_goes_to_its_route_with_its_own_key(monkeypa
         assert {r['auth'] for r in legacy.requests} == {'Bearer sk-legacy-own'}
 
 
+def test_adopted_cli_custom_session_keeps_custom_route_when_profile_moved_to_another_provider(monkeypatch):
+    """A v0.21 CLI row's route is ``billing_provider='custom'`` + ``billing_base_url``. With the profile now
+    on Anthropic, adoption must not pair ``anthropic`` (its wire mode and key) with the legacy endpoint."""
+    from run_agent import AIAgent
+    with FakeLLMServer([Text('legacy ok')]) as legacy:
+        home = Path(os.environ['HERMES_HOME'])
+        monkeypatch.setattr('gateway.run._hermes_home', home)
+        monkeypatch.setenv('ANTHROPIC_API_KEY', 'sk-ant-profile-only')
+        home.mkdir(parents=True, exist_ok=True)
+        (home / 'config.yaml').write_text(
+            'model:\n  default: claude-profile\n  provider: anthropic\n'
+            'agent:\n  api_max_retries: 1\nplatform_toolsets:\n  tui: []\n'
+            f'custom_providers:\n  - name: legacy-box\n    base_url: {legacy.base_url}\n    api_key: sk-legacy-own\n')
+        policy, (model, runtime) = _adopt_and_resolve(home, {}, source='cli', billing={
+            'billing_provider': 'custom', 'billing_base_url': legacy.base_url})
+        agent = AIAgent(model=model, **{k: runtime[k] for k in ('api_key', 'base_url', 'provider', 'api_mode')},
+                        reasoning_config=policy.reasoning_config, quiet_mode=True, skip_context_files=True,
+                        skip_memory=True, enabled_toolsets=['memory'])
+        agent.run_conversation('hello again')
+
+        assert [r['model'] for r in legacy.main_requests()] == ['legacy-model']
+        assert legacy.requests and all('sk-ant-profile-only' not in str(r['headers']) for r in legacy.requests)
+        assert {r['auth'] for r in legacy.requests} == {'Bearer sk-legacy-own'}
+
+
 def test_adopted_legacy_session_whose_provider_lost_credentials_is_refused_by_name(monkeypatch):
     with FakeLLMServer([Text('profile')]) as profile:
         home = Path(os.environ['HERMES_HOME'])
