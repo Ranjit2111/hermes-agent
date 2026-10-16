@@ -229,3 +229,60 @@ async def test_pending_pick_writes_do_not_stall_the_event_loop(tmp_path, monkeyp
         release.set()
         await owner.close()
         store.close_all_db_handles()
+
+
+@pytest.mark.asyncio
+async def test_a_guarded_deferred_pick_asks_for_confirmation_instead_of_being_dropped(tmp_path, monkeypatch):
+    from agent.usage_anchor import USAGE_ANCHOR_MODEL_CONFIG_KEY, capture_usage_anchor
+    from gateway.session_contract import Submission
+    from hermes_cli import model_selection_guards
+    monkeypatch.setattr(model_selection_guards, '_context_cache_threshold', lambda: 1000)
+    started, release = threading.Event(), asyncio.Event()
+    seen, events = [], []
+    state = {}
+
+    async def handle(event):
+        seen.append((event.text, _running_model(state['authority'], state['ref'])))
+        if event.text == 'RUNNING':
+            started.set()
+            await release.wait()
+        return 'ok'
+    store, db, authority, owner, ref = _owner(tmp_path, monkeypatch, handle)
+    state.update(authority=authority, ref=ref)
+    authority.runner._cached_agent_for = lambda route: None
+    stream = authority.sessions[ref.session_id].event_stream
+    publish = stream.publish
+    monkeypatch.setattr(stream, 'publish', lambda sid, payload, **k: (
+        events.append((k.get('event_type'), payload)), publish(sid, payload, **k))[1])
+    try:
+        db.append_message(ref.session_id, role='user', content='hello')
+        db.append_message(ref.session_id, role='assistant', content='hi')
+        db.patch_session_model_config(ref.session_id, {USAGE_ANCHOR_MODEL_CONFIG_KEY: capture_usage_anchor(
+            250_000, 10, db.get_messages_as_conversation(ref.session_id))})
+        await authority.submit(owner.actor, Submission('running', ref, {'text': 'RUNNING'}, 'queue'))
+        await async_wait_until(started.is_set, timeout=10, what='the first turn is running')
+        assert (await _mutate(owner, db, ref, 'pick', 'guarded'))['result']['status'] == 'deferred'
+        release.set()
+
+        def asks():
+            return [p for t, p in events if t == 'session.updated' and p.get('status') == 'confirmation_required']
+        # The running turn settled: the drain resolves the pick and asks instead of dropping it.
+        await async_wait_until(lambda: asks(), timeout=10, what='the guarded pick asked for confirmation')
+        ask = asks()[0]
+        assert ask['target_model'] == 'guarded' and ask['payload'] == {'model': 'guarded'}
+        assert not [p for t, p in events if p.get('status') == 'refused']
+        assert _running_model(authority, ref) == 'frozen'
+        # The user confirms: the canonical resend carries the owner's token and commits.
+        snap = db.get_session(ref.session_id)
+        confirmed = await owner.dispatch({'id': 9, 'method': 'session.mutate', 'params': {
+            'session_id': ref.session_id, 'request_id': 'confirmed', 'expected_revision': snap['runtime_revision'],
+            'expected_generation': snap['runtime_generation'], 'operation': 'model',
+            'payload': {'model': 'guarded', 'confirm': ask['confirm']}}})
+        assert confirmed['result']['model'] == 'guarded', confirmed
+        assert len(asks()) == 1
+        await _run_turn(authority, owner, db, ref, 'AFTER')
+        assert seen[-1] == ('AFTER', 'guarded')
+    finally:
+        release.set()
+        await owner.close()
+        store.close_all_db_handles()

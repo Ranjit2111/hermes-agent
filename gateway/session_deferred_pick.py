@@ -64,6 +64,8 @@ async def apply_deferred_pick(authority, ref, live):
     if stored is None:
         return
     pick = json.loads(stored[0])
+    if 'awaiting_confirm' in pick:
+        return  # asked once; the user's confirmed (or a newer) selection supersedes it
     application_id = pick['application_id']
     if await asyncio.to_thread(has_mutation_receipt, authority.db, pick['principal_id'], ref.session_id,
                                application_id):
@@ -85,11 +87,19 @@ async def apply_deferred_pick(authority, ref, live):
         if exc.reason == 'session_busy':
             return
         result = {'session_id': ref.session_id, 'operation': 'model', 'status': 'refused', 'reason': exc.reason}
+    if result.get('status') == 'confirmation_required':
+        # A guarded target (cost / data policy / large context): nothing was written. The pick stays
+        # pending, marked as asked, and the owner's confirmation exchange goes to every viewer; the
+        # confirmed resend (``payload.confirm``) commits it through session.mutate.
+        from hermes_state_runtime import _json
+        await asyncio.to_thread(authority.db._execute_write, lambda conn: conn.execute(
+            'UPDATE state_meta SET value=? WHERE key=? AND value=?',
+            (_json({**pick, 'awaiting_confirm': result['confirm']}), key, stored[0])))
+        live.event_stream.publish(ref.session_id, {**result, 'payload': pick['payload']},
+                                  event_type='session.updated')
+        return
     await asyncio.to_thread(authority.db._execute_write, lambda conn: conn.execute(
         'DELETE FROM state_meta WHERE key=? AND value=?', (key, stored[0])))
-    if result.get('status') in {'refused', 'confirmation_required'}:
-        logger.warning('Deferred model pick on %s not applied: %s', ref.session_id,
-                       result.get('reason') or result['status'])
-        live.event_stream.publish(ref.session_id, {**result, 'status': 'refused',
-                                                   'reason': result.get('reason') or result['status']},
-                                  event_type='session.updated')
+    if result.get('status') == 'refused':
+        logger.warning('Deferred model pick on %s not applied: %s', ref.session_id, result.get('reason'))
+        live.event_stream.publish(ref.session_id, result, event_type='session.updated')
