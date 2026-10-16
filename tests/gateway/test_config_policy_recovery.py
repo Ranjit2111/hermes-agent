@@ -174,3 +174,43 @@ def test_an_unchanged_custom_providers_key_survives_a_restart(tmp_path, monkeypa
         policy.config(owner())
     assert refused.value.field == 'custom_providers.0.api_key'
     assert 'changed in' in refused.value.detail
+
+
+def test_only_the_entry_the_runtime_selects_is_the_route(tmp_path, monkeypatch):
+    """Two ``custom_providers`` entries share a name: the runtime routes through the FIRST, so
+    rotating the unused second key leaves the session running (that key is simply not supplied);
+    rotating the selected one refuses and names it."""
+    from hermes_state_runtime import RuntimeStoreError
+    cfg = {'model': {'provider': 'custom:shared', 'default': 'm'},
+           'custom_providers': [
+               {'name': 'Shared', 'base_url': 'http://127.0.0.1:1111/v1', 'api_key': 'first-token'},
+               {'name': 'Shared', 'base_url': 'http://127.0.0.1:2222/v1', 'api_key': 'second-token'}]}
+    policy, owner, config_path = _bound_session(tmp_path, monkeypatch, cfg)
+
+    cfg['custom_providers'][1]['api_key'] = 'rotated-second'
+    config_path.write_text(json.dumps(cfg))
+    config = policy.config(owner())
+    assert config['custom_providers'][0]['api_key'] == 'first-token'
+    assert config['custom_providers'][1]['api_key'] is None
+
+    cfg['custom_providers'][0]['api_key'] = 'rotated-first'
+    config_path.write_text(json.dumps(cfg))
+    with pytest.raises(RuntimeStoreError) as refused:
+        policy.config(owner())
+    assert refused.value.field == 'custom_providers.0.api_key'
+
+
+def test_a_custom_prefixed_providers_key_is_the_route(tmp_path, monkeypatch):
+    """``providers['custom:foo']`` is what ``model.provider: custom:foo`` resolves to at runtime; a
+    rotated key there refuses by name instead of being silently dropped."""
+    from hermes_state_runtime import RuntimeStoreError
+    cfg = {'model': {'provider': 'custom:foo', 'default': 'm'},
+           'providers': {'custom:foo': {'base_url': 'http://127.0.0.1:1234/v1', 'api_key': 'foo-token'}}}
+    policy, owner, config_path = _bound_session(tmp_path, monkeypatch, cfg)
+    assert policy.config(owner())['providers']['custom:foo']['api_key'] == 'foo-token'
+
+    cfg['providers']['custom:foo']['api_key'] = 'rotated-foo'
+    config_path.write_text(json.dumps(cfg))
+    with pytest.raises(RuntimeStoreError) as refused:
+        policy.config(owner())
+    assert refused.value.field == 'providers.custom:foo.api_key'

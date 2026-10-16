@@ -29,25 +29,18 @@ def _defined(root, path):
 
 def _route_paths(policy):
     """Secret paths the session's own route authenticates with: its ``model:`` block, a direct alias's
-    key (``api_key_from``) and the ``providers:`` / ``custom_providers:`` entry its provider names."""
+    key (``api_key_from``) and the one ``providers:`` / ``custom_providers:`` entry the runtime's own
+    named-provider selection routes its provider through."""
+    from hermes_cli.runtime_provider_custom import named_custom_provider_config_path
     config = json.loads(policy.config_json)
     model = config.get('model') if isinstance(config.get('model'), dict) else {}
     paths = {('model', key) for key in model}
     if isinstance(model.get('api_key_from'), list):
         paths.add(tuple(model['api_key_from']))
-    name = str(model.get('provider') or '').strip().lower()
-    name = name.removeprefix('custom:')
-
-    def named(value):
-        return str(value or '').strip().lower().replace(' ', '-') == name.replace(' ', '-')
-    providers = config.get('providers')
-    for key, entry in (providers.items() if isinstance(providers, dict) and name else ()):
-        if named(key) or isinstance(entry, dict) and named(entry.get('name')):
-            paths |= {('providers', key, field) for field in (entry if isinstance(entry, dict) else ())}
-    custom = config.get('custom_providers')
-    for index, entry in (enumerate(custom) if isinstance(custom, list) and name else ()):
-        if isinstance(entry, dict) and named(entry.get('name')):
-            paths |= {('custom_providers', index, field) for field in entry}
+    selected = named_custom_provider_config_path(str(model.get('provider') or ''), config)
+    entry = _defined(config, selected) if selected else _ABSENT
+    if isinstance(entry, dict):
+        paths |= {selected + (field,) for field in entry}
     return paths
 
 
