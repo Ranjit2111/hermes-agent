@@ -73,7 +73,7 @@ def local_authority_live(runner, source):
     return None, None
 
 
-def defer_local_model_pick(authority, live, result):
+def defer_local_model_pick(authority, live, result, effort=''):
     """A typed ``/model`` on a local session: the resolved target becomes the session's canonical
     ``model`` mutation, committed by the owner at the next turn boundary (the typed command is
     itself the running admission). One writer, so the next request, ``sessions.model`` and
@@ -87,5 +87,7 @@ def defer_local_model_pick(authority, live, result):
     payload = {'model': result.new_model}
     if result.target_provider:
         payload['provider'] = result.target_provider
+    if effort:
+        payload['reasoning'] = effort  # `--reasoning <level>`: committed in the same selection
     defer_pick(authority, owner, SessionRef(authority.profile_id, sid),
                {'request_id': 'typed-model:' + uuid.uuid4().hex, 'payload': payload})

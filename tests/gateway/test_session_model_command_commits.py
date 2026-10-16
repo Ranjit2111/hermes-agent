@@ -55,9 +55,11 @@ def test_typed_model_command_on_a_local_session_moves_the_next_request(tmp_path)
 
             sid = (await call('session.create', source='tui', request_id='owner', toolsets=[]))['session_id']
             await turn(sid, 'BEFORE')
-            await turn(sid, '/model switched')
+            await turn(sid, '/model switched --reasoning high')
             await turn(sid, 'AFTER')
             assert [r['model'] for r in peer.requests] == ['original', 'switched'], [(r['model'], r['messages'][-1]['content']) for r in peer.requests]
+            # The level typed with the model commits in the same selection.
+            assert peer.requests[-1].get('reasoning_effort') == 'high', peer.requests[-1]
             assert (await call('session.info', session_id=sid))['model'] == 'switched'
             with sqlite3.connect(home / 'state.db') as db:
                 assert db.execute('SELECT model FROM sessions WHERE id=?', (sid,)).fetchone()[0] == 'switched'

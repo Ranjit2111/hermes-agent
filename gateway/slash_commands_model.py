@@ -420,7 +420,10 @@ class GatewayModelCommandsMixin:
             # only commit, landing at the next turn boundary (this command is the running turn).
             if one_turn:
                 return t("gateway.model.error_prefix", error=t("gateway.model.err_once_local"))
-            await asyncio.to_thread(defer_local_model_pick, authority, live, result)
+            from hermes_constants import parse_reasoning_effort
+            effort = (ctx.reasoning_effort or "").strip().lower()
+            level = effort if parse_reasoning_effort(effort) is not None else ""
+            await asyncio.to_thread(defer_local_model_pick, authority, live, result, level)
             self._record_switch_metrics(result, ctx, source)
             global_error = None
             if ctx.persist_global:
@@ -429,9 +432,20 @@ class GatewayModelCommandsMixin:
                 except Exception as e:
                     logger.warning("Failed to persist model switch", exc_info=True)
                     global_error = t("gateway.model.err_config_not_updated", error=str(e) or type(e).__name__)
-            return await self._model_switch_confirmation(
-                result, ctx, one_turn=False, picker=picker, global_error=global_error) + (
-                "\n" + t("gateway.model.local_next_turn"))
+            reply = await self._model_switch_confirmation(
+                result, ctx, one_turn=False, picker=picker, global_error=global_error)
+            if level:
+                saved = (ctx.persist_global and global_error is None
+                         and self._save_gateway_config_key("agent.reasoning_effort", level))
+                reply += "\n" + t("gateway.reasoning.set_global" if saved else "gateway.reasoning.set_session",
+                                  effort=level)
+            elif effort:
+                # A display toggle / reset / unknown word is not a level: the /reasoning applier answers.
+                from gateway.run import _platform_config_key
+                reply += "\n" + self._apply_reasoning_selection(
+                    ctx.session_key, _platform_config_key(source.platform), effort,
+                    persist_global=ctx.persist_global and global_error is None)
+            return reply + "\n" + t("gateway.model.local_next_turn")
         error = self._switch_cached_agent_model(result, ctx, picker)
         if error is not None:
             return error
