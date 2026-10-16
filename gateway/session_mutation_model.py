@@ -70,7 +70,12 @@ async def prepare_model(authority, live, payload, prepared):
         # A following session switches FROM the profile's current route: measured from its creation
         # endpoint, a pick on the current one read as a route change and dropped its key_env pointer.
         followed = config.get('model') or {}
-        frozen['model'] = {k: v for k, v in (frozen.get('model') or {}).items() if k not in _ROUTE_FIELDS}
+        from gateway.session_policy import model_route
+        # An inline key (or an alias key's pointer) authenticates the route it was picked on: once the
+        # followed route moved, the same-route cleanup below would keep it for the new endpoint.
+        bound = () if model_route(frozen.get('model')) == model_route(followed) else ('api_key', 'api_key_from')
+        frozen['model'] = {k: v for k, v in (frozen.get('model') or {}).items()
+                           if k not in _ROUTE_FIELDS + bound}
         frozen['model'].update({k: followed[k] for k in _ROUTE_FIELDS if k in followed})
     # The one selection shape config.yaml gets (#25106): api_mode follows the target, a context pin
     # and the endpoint-bound credential fields (inline key, key_env/api_key_env) drop on a route change.

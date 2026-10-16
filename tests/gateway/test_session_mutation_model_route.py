@@ -63,10 +63,10 @@ def _configure(home, model, url, key):
         'provider': 'custom', 'default': model, 'base_url': url, 'api_key': key}}), encoding='utf-8')
 
 
-async def _pick(owner, authority, sid, payload):
+async def _pick(owner, authority, sid, payload, request_id='model-pick'):
     row = authority.db.get_session(sid)
     return await owner.dispatch({'id': 'pick', 'method': 'session.mutate', 'params': {
-        'session_id': sid, 'request_id': 'model-pick', 'expected_revision': row['runtime_revision'],
+        'session_id': sid, 'request_id': request_id, 'expected_revision': row['runtime_revision'],
         'expected_generation': row['runtime_generation'], 'operation': 'model', 'payload': payload}})
 
 
@@ -242,6 +242,41 @@ async def test_a_following_pick_keeps_the_current_endpoints_key_env(home, endpoi
         assert 'result' in response, response
         assert a.received == [] and set(b.received) == {'Bearer key-b'}
         assert _route(runner, live) == ('picked', url_b, 'key-b')
+    finally:
+        await owner.close()
+        store.close_all_db_handles()
+
+
+@pytest.mark.asyncio
+async def test_a_superseded_alias_key_never_reaches_the_next_picks_endpoint(home, endpoints):
+    """A following session picks a literal-key alias on A; the profile then moves to B and the user
+    picks another model there. The alias's key pointer is bound to A's route: it must not survive
+    the pick and authenticate B's next turn."""
+    (_, url_a), (b, url_b) = endpoints
+
+    def profile(model, url, key):
+        (home / 'config.yaml').write_text(json.dumps({
+            'model': {'provider': 'custom', 'default': model, 'base_url': url, 'api_key': key},
+            'model_aliases': {'keyed': {'model': 'current', 'provider': 'custom',
+                                        'base_url': url_a, 'api_key': 'key-alias'}},
+        }), encoding='utf-8')
+    profile('original', url_a, 'key-a')
+    store, runner, authority, owner = _owner(home)
+    _bind_resolver(runner)
+    try:
+        live = await _create(owner, authority, home, 'follow-alias')
+        sid = next(sid for sid, value in authority.sessions.items() if value is live)
+        assert 'result' in await _pick(owner, authority, sid, {'model': 'keyed'}, 'alias-pick')
+        assert _route(runner, live) == ('current', url_a, 'key-alias')
+        profile('current', url_b, 'key-b')  # a new profile target supersedes the alias pick
+        assert _route(runner, live) == ('current', url_b, 'key-b')
+        b.received.clear()
+
+        response = await _pick(owner, authority, sid, {'model': 'picked', 'provider': 'custom'})
+
+        assert 'result' in response, response
+        assert _route(runner, live) == ('picked', url_b, 'key-b')
+        assert 'Bearer key-alias' not in b.received
     finally:
         await owner.close()
         store.close_all_db_handles()
