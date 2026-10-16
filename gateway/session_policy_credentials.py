@@ -24,6 +24,30 @@ def _defined(root, path):
     return value
 
 
+def _route_paths(policy):
+    """Secret paths the session's own route authenticates with: its ``model:`` block, a direct alias's
+    key (``api_key_from``) and the ``providers:`` / ``custom_providers:`` entry its provider names."""
+    config = json.loads(policy.config_json)
+    model = config.get('model') if isinstance(config.get('model'), dict) else {}
+    paths = {('model', key) for key in model}
+    if isinstance(model.get('api_key_from'), list):
+        paths.add(tuple(model['api_key_from']))
+    name = str(model.get('provider') or '').strip().lower()
+    name = name.removeprefix('custom:')
+
+    def named(value):
+        return str(value or '').strip().lower().replace(' ', '-') == name.replace(' ', '-')
+    providers = config.get('providers')
+    for key, entry in (providers.items() if isinstance(providers, dict) and name else ()):
+        if named(key) or isinstance(entry, dict) and named(entry.get('name')):
+            paths |= {('providers', key, field) for field in (entry if isinstance(entry, dict) else ())}
+    custom = config.get('custom_providers')
+    for index, entry in (enumerate(custom) if isinstance(custom, list) and name else ()):
+        if isinstance(entry, dict) and named(entry.get('name')):
+            paths |= {('custom_providers', index, field) for field in entry}
+    return paths
+
+
 def policy_identity(policy):
     data = asdict(policy)
     data.pop('credential_ref')
@@ -73,6 +97,7 @@ def recover_config_secrets(authority, policy, skip=None):
         from gateway.run import _load_gateway_config
         entries = [entry for entry in source['entries'] if entry[0][0] not in skip]
         config = _load_gateway_config(home / 'config.yaml') if any(path[0] is not None for path, _ in entries) else {}
+        route = _route_paths(policy)
         values = {}
         for path, fingerprint in entries:
             value, lookup = config, path
@@ -80,24 +105,21 @@ def recover_config_secrets(authority, policy, skip=None):
                 from tools.terminal_scope import build_profile_terminal_scope
                 value, lookup = build_profile_terminal_scope(home), path[1:]
             value = _defined(value, lookup)
-            if value is _ABSENT:
-                if len(path) > 1:
-                    raise ValueError('credential removed')
-                # One top-level key the profile no longer defines at all: an env-routed setting the
-                # user has since moved out of config.yaml (``API_SERVER_KEY`` belongs in .env, where
-                # ``hermes config set`` writes it) is not this session's route credential, and the
-                # profile has no value left to recover or to substitute. Refusing it used to wedge
-                # every read of the chat - its model options, its reasoning picker, its turns - not
-                # just the credential it named, so the session simply keeps what the frozen tree
-                # already holds (None). A nested path still refuses: it can carry the route's own
-                # credential, and a session must never silently take a different endpoint's key.
-                logger.warning('Session %s: frozen config secret %s is no longer defined by the '
-                               'profile config; skipping it', source.get('session'), path)
-                continue
-            actual = _fingerprint(value)
+            actual = None if value is _ABSENT else _fingerprint(value)
             if actual is None or not hmac.compare_digest(actual, fingerprint):
-                raise ValueError('credential changed')
+                if tuple(path) in route:
+                    raise RuntimeStoreError('launch_credentials_unavailable',
+                        field='.'.join(str(part) for part in path if part is not None),
+                        detail=('removed from' if value is _ABSENT else 'changed in')
+                        + ' config.yaml since this session started')
+                # Any other secret (an MCP env token, an unused provider's key) is simply no longer
+                # supplied: the frozen tree holds None there, never the profile's new value.
+                logger.warning('Session %s: frozen config secret %s no longer matches the profile '
+                               'config; skipping it', source.get('session'), path)
+                continue
             values[tuple(path)] = value
         return values
+    except RuntimeStoreError:
+        raise
     except (KeyError, TypeError, ValueError, AttributeError, OSError) as exc:
         raise RuntimeStoreError('launch_credentials_unavailable') from exc

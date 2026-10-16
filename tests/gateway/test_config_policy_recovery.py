@@ -99,3 +99,45 @@ def test_dropped_top_level_setting_does_not_wedge_the_session(tmp_path, monkeypa
         policy.config(owner())
     settings = policy.config(owner(), secrets=False)  # a display/model-option read needs no secret
     assert settings['model']['provider'] == 'custom' and settings['model']['api_key'] is None
+
+
+@pytest.mark.parametrize('edit', ['change', 'remove'])
+def test_an_unrelated_secret_edit_keeps_the_route_and_a_gone_route_key_is_named(tmp_path, monkeypatch, edit):
+    """CFG-1: editing ANY config secret (here an MCP server's env token) used to strand every older
+    session after a restart. Only the session's own route credential may refuse, and that refusal
+    names the credential; the unrelated secret is simply no longer supplied, never swapped."""
+    from gateway.session_policy import build_policy, bind_launch_key
+    from hermes_state_runtime import RuntimeStoreError
+    home = tmp_path / 'profile'
+    home.mkdir()
+    monkeypatch.setenv('HERMES_HOME', str(home))
+    cfg = {'model': {'provider': 'custom', 'api_key': 'route-token', 'base_url': 'http://127.0.0.1:1234/v1'},
+           'mcp_servers': {'docs': {'command': 'docs-mcp', 'env': {'DOCS_TOKEN': 'old-mcp-token'}}}}
+    config_path = home / 'config.yaml'
+    config_path.write_text(json.dumps(cfg))
+
+    def owner():  # a fresh authority per read, like a restarted owner
+        return SimpleNamespace(db=SimpleNamespace(db_path=home / 'state.db'),
+                               profile_id='owned', instance_id='new', epoch=2)
+    private = {}
+    policy = build_policy({'cwd': str(home), 'model': 'frozen'}, cfg, private_secrets=private)
+    policy = bind_launch_key(owner(), 'session', policy, None, config_secrets=private)
+
+    if edit == 'change':
+        cfg['mcp_servers']['docs']['env']['DOCS_TOKEN'] = 'rotated-mcp-token'
+    else:
+        del cfg['mcp_servers']['docs']['env']
+    config_path.write_text(json.dumps(cfg))
+    config = policy.config(owner())
+    assert config['model']['api_key'] == 'route-token'
+    assert config['mcp_servers']['docs']['env'] is None  # neither the old nor a swapped-in token
+
+    if edit == 'change':
+        cfg['model']['api_key'] = 'another-route-token'
+    else:
+        del cfg['model']['api_key']
+    config_path.write_text(json.dumps(cfg))
+    with pytest.raises(RuntimeStoreError, match='launch_credentials_unavailable') as refused:
+        policy.config(owner())
+    assert refused.value.field == 'model.api_key'
+    assert 'route-token' not in str(refused.value.detail) and 'another' not in str(refused.value.detail)
